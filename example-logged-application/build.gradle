@@ -1,0 +1,89 @@
+
+plugins {
+    // Apply the application plugin to add support for building a CLI application in Java.
+    id 'application'
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+ext.isPropertySet = { propName ->
+    if (!project.hasProperty(propName)) {
+        return false
+    } else {
+        def prop = project.getProperty(propName)
+        return (prop != "unspecified" && (prop != "" || prop != null))
+    }
+}
+
+//if the project has a value for the passed property (i.e from the cmd line via -PpropName=xxx)
+//use that, else use a default value
+ext.getPropertyOrDefault = { propName, defaultValue ->
+    def val;
+    if (isPropertySet(propName)) {
+        val = project.getProperty(propName)
+        println "Getting property [$propName] with value [$val]"
+    } else {
+        val = defaultValue
+        println "Property [$propName] has no value, using default value [$val]"
+    }
+    return val;
+}
+
+//def DEFAULT_EVENT_LOGGING_VERSION = '5.0-beta.29_schema-v4.0-beta.3'
+def DEFAULT_EVENT_LOGGING_VERSION = 'schema-v4.1.0-SNAPSHOT'
+
+ext.versions = [
+    eventLogging: getPropertyOrDefault('mavenVersion', DEFAULT_EVENT_LOGGING_VERSION),
+    logback : '1.2.3',
+]
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+dependencies {
+    // The event logging library
+    implementation "uk.gov.gchq.eventlogging:event-logging:$versions.eventLogging"
+
+    // Used for logging in this example application's code
+    // SLF4J is also a transitive runtime dependency of event-logging
+    //implementation 'com.fasterxml.jackson.core:jackson-annotations:2.13.2'
+    implementation 'org.slf4j:slf4j-api:1.7.30'
+
+    // Required for the annotations on the Event model classes
+    implementation  "jakarta.xml.bind:jakarta.xml.bind-api:4.0.2"
+
+    // Used by this example application at run time to log output to the console
+    // Other SLF4J implementations can be used
+    runtimeOnly "ch.qos.logback:logback-classic:$versions.logback"
+    runtimeOnly "ch.qos.logback:logback-core:$versions.logback"
+
+    // Use JUnit Jupiter API for testing this example application.
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.6.2'
+    testImplementation 'org.assertj:assertj-core:3.20.2'
+
+    // Use JUnit Jupiter Engine for testing this example application.
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+    // Define the main class for the application.
+    mainClass = 'event.logging.example.App'
+}
+
+run {
+    // Application is interactive so attach stdin
+    standardInput = System.in
+}
+
+tasks.named('test') {
+    // Use junit platform for unit tests.
+    useJUnitPlatform()
+}

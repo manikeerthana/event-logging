@@ -1,0 +1,327 @@
+import java.util.regex.Pattern
+
+buildscript {
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'ca.cutterslade.gradle', name: 'gradle-dependency-analyze', version: '1.5.2'
+    }
+}
+
+plugins {
+    //plugin for downloading content from the 'net
+    id "de.undercouch.download" version "3.4.3"
+    id "io.github.gradle-nexus.publish-plugin" version "1.2.0"
+    //plugin for producing a tree of task dependencies, run task 'taskTree'
+    id "com.dorongold.task-tree" version "1.5"
+    id "signing"
+    id 'java-library'
+    id "maven-publish"
+    id "io.swagger.core.v3.swagger-gradle-plugin" version "2.1.7"
+}
+
+//must be applied to all projects including root
+apply plugin: 'ca.cutterslade.analyze'
+apply plugin: 'io.github.gradle-nexus.publish-plugin'
+apply plugin: 'maven-publish'
+
+ext.isPropertySet = { propName ->
+    if (!project.hasProperty(propName)) {
+        return false
+    } else {
+        def prop = project.getProperty(propName)
+        return (prop != "unspecified" && (prop != "" || prop != null))
+    }
+}
+
+ext.ensurePropertyIsSet = { propName ->
+    if (!isPropertySet(propName)) {
+        throw new GradleException(
+            "Expecting project property [${propName}] or env var [ORG_GRADLE_PROJECT_${propName}] to be set.")
+    }
+}
+
+//if the project has a value for the passed property (i.e from the cmd line via -PpropName=xxx)
+//use that, else use a default value
+ext.getPropertyOrDefault = { propName, defaultValue ->
+    def val;
+    if (isPropertySet(propName)) {
+        val = project.getProperty(propName)
+        println "Getting property [$propName] with value [$val]"
+    } else {
+        val = defaultValue
+        println "Property [$propName] has no value, using default value [$val]"
+    }
+    return val;
+}
+
+//Extract the major version from a version str
+ext.getMajorVersion = { versionStr ->
+    def groups = (versionStr =~ /v([0-9]+)\..*/)
+    def majorVer = groups[0][1]
+    return majorVer
+}
+
+
+// Set this to the desired release version of the event-logging XML schema on github
+// *****************************************************************************
+def eventLoggingSchemaVer = "v4.1.0"
+// *****************************************************************************
+
+// Set this to the last release of this repo on this branch, or earlier branches
+// It is used to diff the current jaxb code against the last release so you can
+// see if/how the java model has changed following schema changes or changes
+// to the jaxb code generation.
+// *****************************************************************************
+ext.previousReleaseVersion = "v5.0.3_schema-v4.0.0"
+// *****************************************************************************
+
+
+def VERSION_PATTERN = /^(?:v[0-9.]+(?:-(?:beta|alpha)[0-9.]+)?_)?schema-(v[0-9.]+(?:-(?:beta|alpha)[0-9.]+)?)(-SNAPSHOT)?$/
+def CHANGE_LOG_FILENAME = "CHANGELOG.md"
+def projectVersion = getPropertyOrDefault('version', "schema-${eventLoggingSchemaVer}-SNAPSHOT")
+def eventLoggingSchemaMajorVer = getMajorVersion(eventLoggingSchemaVer)
+
+ext.isReleaseBuild = !projectVersion.endsWith("SNAPSHOT")
+
+// We don't want the 'v' prefix on version numbers in maven
+ext.projectVersionForMaven = projectVersion.replaceFirst(/^v/, "")
+
+if (isReleaseBuild) {
+    println "This is a release build for maven version [${projectVersionForMaven}]"
+    println "Gradle will release artefacts to sonatype."
+    println "To test a versioned build without releasing to sonatype add '-SNAPSHOT' to the end of the version property"
+
+    // Ensure the various props are set for signing and publishing to sonatype
+
+    // The username for Sonatype OSSRH Jira account
+    ensurePropertyIsSet("sonatypeUsername")
+    // The password for Sonatype OSSRH Jira account
+    ensurePropertyIsSet("sonatypePassword")
+    // The GPG2 secret key in ascii armour format, base64 encoded
+    ensurePropertyIsSet("signingKey")
+    // The password for the GPG2 secret key
+    ensurePropertyIsSet("signingPassword")
+}
+
+if (!(projectVersion =~ /^SNAPSHOT\.*/)) {
+    //Ensure the version string looks a bit like v1.2.3_schema-v4.5.6
+    if (!(projectVersion =~ VERSION_PATTERN)) {
+        throw new GradleException("Version [${projectVersion}] does not match pattern [${VERSION_PATTERN}], e.g. v1.2.3_schema-v4.5.6")
+    }
+
+    //Ensure the schema part of the combined version string matches eventLoggingSchemaVer
+    //This makes sure we don't tag as schema vX when the jar is built with schema vY
+    def matcher = (projectVersion =~ VERSION_PATTERN)
+    def schemaVerFromProjectVer = matcher[0][1]
+    if (schemaVerFromProjectVer != eventLoggingSchemaVer) {
+        throw new GradleException("eventLoggingSchemaVer [${eventLoggingSchemaVer}] does not match schema version part [${schemaVerFromProjectVer}] of [${projectVersion}]")
+    }
+
+    //This is versioned build so ensure the version is in the CHANGELOG
+    def changeLogFile = new File(CHANGE_LOG_FILENAME)
+    def pattern = Pattern.compile(projectVersion, Pattern.LITERAL)
+
+    // TODO commented for testing
+    //if (!changeLogFile.getText("UTF-8").find(pattern)) {
+        //throw new GradleException("This is a versioned build, cannot find string \"${pattern.toString()}\" in file ${CHANGE_LOG_FILENAME}, add the new version to the change log")
+    //}
+}
+
+//The XML Schema to use as the basis for generating the event-logging jaxb library code
+ext.eventLoggingSchemaUrl = "http://github.com/gchq/event-logging-schema/releases/download/${eventLoggingSchemaVer}/event-logging-v${eventLoggingSchemaMajorVer}-client.xsd"
+
+// For development purposes (e.g. you want to trial jaxb generation on a modified but
+// un-released schema) you can do something like:
+// ./gradlew clean build -PschemaFilePath=/tmp/myModifiedSchema.xsd
+// This will then use this file instead of downloading the schema from github
+ext.eventLoggingSchemaFilePath = getPropertyOrDefault("schemaFilePath", "")
+
+if (!eventLoggingSchemaFilePath.isEmpty()) {
+
+    def schemaFile = new File(eventLoggingSchemaFilePath)
+    ext.eventLoggingSchemaFilePath = schemaFile.absolutePath.toString()
+    println "Setting eventLoggingSchemaFilePath to ${ext.eventLoggingSchemaFilePath}"
+    assert schemaFile.exists()
+}
+
+println "Using project version:         $projectVersion"
+println "Using project version (maven): ${projectVersionForMaven}"
+println "Using schema version:          ${eventLoggingSchemaVer}"
+println "Using namespace version:       ${eventLoggingSchemaMajorVer}"
+println "Using schema url:              ${eventLoggingSchemaUrl}"
+println "Using schema file path:        $eventLoggingSchemaFilePath"
+
+ext.versions = [
+    //------event-logging--------------
+    eventLogging         : projectVersionForMaven,
+
+    //------------3rd-party------------
+    logback              : '1.2.3',
+    mockito              : '3.12.4',
+    swagger              : '2.1.12',
+]
+
+// NOTE
+// XJC code gen is still being done using JAXB 2, but we find/replace javax.xml => jakarta.xml
+// so the published -api module can have JAXB 4 deps. Thus there is a mix of JAXB 2/4 deps
+// below. Once jaxb-rich-contract-plugin is fixed so we can use its v4.2.0.0+ we can switch
+// to all JAXB 4 deps (see https://github.com/mklemm/jaxb-rich-contract-plugin/issues/78)
+
+ext.libs = [
+    assertj_core                   : "org.assertj:assertj-core:3.20.2",
+    jaxb_api                       : "jakarta.xml.bind:jakarta.xml.bind-api:4.0.2",
+    jaxb_basics                    : "org.jvnet.jaxb2_commons:jaxb2-basics:0.12.0",
+    jaxb_rich_contract_plugin      : "net.codesup.util:jaxb2-rich-contract-plugin:2.1.0",
+    jaxb_runtime_2                 : "org.glassfish.jaxb:jaxb-runtime", // Version set by jaxb_bom
+    jaxb_impl                      : "com.sun.xml.bind:jaxb-impl:4.0.4",
+    jaxb_xjc                       : "org.glassfish.jaxb:jaxb-xjc", // Version set by jaxb_bom
+    jaxb_bom_2                     : "org.glassfish.jaxb:jaxb-bom:2.4.0-b180830.0438",
+    junit_bom                      : "org.junit:junit-bom:5.10.0",
+    junit_jupiter_api              : "org.junit.jupiter:junit-jupiter-api", // ver controlled by junit_bom
+    junit_jupiter_engine           : "org.junit.jupiter:junit-jupiter-engine", // ver controlled by junit_bom
+    junit_jupiter_params           : "org.junit.jupiter:junit-jupiter-params", // ver controlled by junit_bom
+    junit_platform_launcher        : "org.junit.platform:junit-platform-launcher", // ver controlled by junit_bom
+    logback_classic                : "ch.qos.logback:logback-classic:${versions.logback}",
+    logback_core                   : "ch.qos.logback:logback-core:${versions.logback}",
+    mockito_core                   : "org.mockito:mockito-core:$versions.mockito",
+    mockito_junit_jupiter          : "org.mockito:mockito-junit-jupiter:$versions.mockito",
+    saxon_he                       : "net.sf.saxon:Saxon-HE:9.7.0-21",
+    slf4j_api                      : "org.slf4j:slf4j-api:1.7.36",
+]
+
+// NOTE
+//
+
+allprojects {
+    group "uk.gov.gchq.eventlogging" // no spaces as java pkg name convention
+    version projectVersionForMaven
+}
+
+subprojects {
+    apply plugin: 'java-library'
+//    apply plugin: 'ca.cutterslade.analyze'
+    apply plugin: 'idea'
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(11)
+            vendor = JvmVendorSpec.ADOPTIUM
+        }
+    }
+
+    dependencies {
+        implementation platform(libs.jaxb_bom_2)
+    }
+
+    //configurations {
+
+        //all {
+            //exclude group: "org.slf4j", module: "slf4j-log4j12"
+            //exclude group: "log4j", module: "log4j"
+
+            //resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+                //if (details.requested.name == 'log4j') {
+                    //details.useTarget "org.slf4j:log4j-over-slf4j:$versions.slf4j"
+                //}
+            //}
+            //resolutionStrategy {
+                //forcedModules = [
+                //]
+            //}
+        //}
+    //}
+
+    test {
+        // Needed for junit 5
+        useJUnitPlatform()
+    }
+
+    // This means the reports from our integration tests won't over-write the reports from our unit tests.
+    tasks.withType(Test) {
+        reports.html.outputLocation = file("${reporting.baseDir}/${name}")
+
+        //Use full logging for test exceptions so we can see where the failure occurred
+        testLogging {
+            events "failed"
+            exceptionFormat = 'full'
+            showStackTraces = true
+        }
+    }
+
+    clean {
+        //clear out the 'out' dirs used by intelliJ
+        delete "out"
+    }
+
+    //modularity.mixedJavaRelease 8
+
+    /* This is for Java9+
+    afterEvaluate {
+        repositories {
+            jcenter()
+        }
+
+        // These commented blocks are for compiling on j9+
+        //compileJava {
+            //inputs.property("moduleName", moduleName)
+            //doFirst {
+                //options.compilerArgs = [
+                        //'--module-path', classpath.asPath,
+                //]
+                //classpath = files()
+            //}
+        //}
+
+        //compileTestJava {
+            //inputs.property("moduleName", moduleName)
+            //doFirst {
+                //options.compilerArgs = [
+                        //'--module-path', classpath.asPath,
+                        //'--patch-module', "$moduleName=" + files(sourceSets.test.java.srcDirs).asPath,
+                //]
+                //classpath = files()
+            //}
+        //}
+
+
+        //javadoc {
+            //options.addStringOption('-module-path', classpath.asPath)
+            //options.addStringOption('Xdoclint:all,-missing', '-html5')
+        //}
+
+        jar {
+            // Add in the auto module name for j9+ clients
+            inputs.property("moduleName", moduleName)
+            manifest {
+                attributes(
+                        "Automatic-Module-Name": moduleName,
+                )
+            }
+        }
+    }
+    */
+}
+
+
+// Uses sonotypeUsername and sonotypePassword
+// This needs to be in the root project
+// See https://github.com/rwinch/gradle-publish-ossrh-sample
+// Also https://github.com/kit-data-manager/nexus-publish-example
+nexusPublishing {
+    repositories {
+        sonatype()    //sonatypeUsername and sonatypePassword properties are used automatically
+    }
+    // these are not strictly required. The default timeouts are set to 1 minute. But Sonatype can be really slow.
+    // If you get the error "java.net.SocketTimeoutException: timeout", these lines will help.
+    connectTimeout = Duration.ofMinutes(3)
+    clientTimeout = Duration.ofMinutes(3)
+}
+

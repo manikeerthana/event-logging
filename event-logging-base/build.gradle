@@ -1,0 +1,24 @@
+ext.moduleName = 'event.logging.base'
+
+// In this section you declare the dependencies for your production and test code
+dependencies {
+    implementation project(':event-logging-api')
+
+    // The production code uses the SLF4J logging API at compile time
+    implementation libs.jaxb_api
+    implementation libs.slf4j_api
+    runtimeOnly libs.jaxb_impl
+
+    testImplementation(platform(libs.junit_bom))
+    testImplementation libs.junit_jupiter_api
+    testImplementation libs.junit_jupiter_params
+    testImplementation libs.assertj_core
+    testImplementation libs.mockito_core
+
+    testRuntimeOnly libs.junit_jupiter_engine
+    testRuntimeOnly libs.junit_platform_launcher
+    testRuntimeOnly libs.logback_classic
+    testRuntimeOnly libs.logback_core
+}
+
+

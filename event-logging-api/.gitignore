@@ -1,0 +1,5 @@
+!src/.gitkeep
+/target/
+*.swp
+/.classpath
+/bin/
